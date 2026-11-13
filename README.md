@@ -1,26 +1,26 @@
 # CrazeLM
 
-Experimental compact causal Transformer for CrazeKeyboard next-token prediction. Training is intended for Kaggle GPU; inference/export is intended for Android later.
+Compact, English-only causal Transformer prototype for CrazeKeyboard next-token suggestions. Training is intended for Kaggle GPU; Android inference/export is a later stage.
 
 ## Status
 
-**Training scaffold only. No trained weights are included yet.** Do not integrate or describe this as a trained model until training and evaluation complete.
+**This repository contains training code, not trained weights.** No accuracy, keyboard quality, or Android performance is claimed until a training run and evaluation are completed.
 
-## Initial architecture
+## Model
 
 - Decoder-only causal Transformer
 - 4 layers, width 384, 6 attention heads, FFN width 1536
-- 8,192-token SentencePiece tokenizer with byte fallback
+- SentencePiece BPE tokenizer, target vocabulary 8,192 with byte fallback
 - Tied token embedding/output projection
-- Maximum context: 64 tokens
-- Approximately 10.27M parameters; exact count is printed by the model code
-- English, Bengali and Hindi are tokenizer/training targets; actual quality depends on balanced training data
+- Context length: 64 tokens
+- Approximately 10.27M parameters (the exact count is printed by `scripts/inspect_model.py`)
+- Training language: English only
 
-## Direct Kaggle setup
+## Kaggle setup
 
-Create a Kaggle notebook, enable a GPU, then run these cells in order.
+Create a Kaggle notebook, enable a GPU, and run each cell in order. Internet must be enabled for the initial dataset download.
 
-### 1. Clone the repository and install dependencies
+### 1. Clone and install
 
 ```python
 !git clone https://github.com/CrazeStudio/Crazekeyboard-llm.git
@@ -28,23 +28,34 @@ Create a Kaggle notebook, enable a GPU, then run these cells in order.
 !pip install -q -r requirements.txt
 ```
 
-### 2. Download and prepare training data
+The requirements deliberately do not install Hugging Face `datasets` or upgrade `pyarrow`/Pillow. Dataset preparation downloads the small WikiText-2 archive directly, avoiding the dependency conflicts previously seen in Kaggle. If you already cloned the repository in this session, use `%cd /kaggle/working/Crazekeyboard-llm` instead of cloning again.
 
-This uses AI4Bharat Samanantar, which provides English-Bengali and English-Hindi parallel text. The script streams a limited number of pairs and writes separate training and validation directories; it does not download the full multi-gigabyte corpus.
+### 2. Check GPU and imports
 
-**License warning:** Samanantar is licensed CC BY-NC 4.0 (Attribution-NonCommercial). This is not suitable for commercial model training/distribution without separate permission. Review the license and attribution requirements before proceeding. The explicit flag below acknowledges this restriction; it does not grant additional rights.
+```python
+import torch, sentencepiece, numpy
+print("PyTorch:", torch.__version__)
+print("SentencePiece:", sentencepiece.__version__)
+print("NumPy:", numpy.__version__)
+print("CUDA available:", torch.cuda.is_available())
+!nvidia-smi
+```
+
+### 3. Prepare English-only data
 
 ```python
 !python scripts/prepare_dataset.py \
-  --output_dir /kaggle/working/crazelm_data \
-  --languages bn hi \
-  --max_pairs_per_language 100000 \
-  --accept_cc_by_nc
+  --output_dir /kaggle/working/crazelm_data
 ```
 
-To prepare only Bengali or only Hindi, change `--languages bn hi` to `--languages bn` or `--languages hi`.
+This downloads the official WikiText-2 raw archive and creates:
+- `crazelm_data/train/english.txt`
+- `crazelm_data/validation/english.txt`
+- `crazelm_data/DATASET_MANIFEST.json`
 
-### 3. Train the tokenizer
+WikiText-2 is a small Wikipedia-derived benchmark corpus. It is suitable for checking that the pipeline runs, but it is **not sufficient by itself for a high-quality keyboard suggestion model**. Before release or commercial use, verify the dataset's current license and attribution obligations. For stronger keyboard predictions, add a larger, appropriately licensed English corpus representative of natural typing. You can prepare your own .txt corpus with `--input_dir /path/to/english_text_folder`.
+
+### 4. Train the English tokenizer
 
 ```python
 !python scripts/train_tokenizer.py \
@@ -53,13 +64,31 @@ To prepare only Bengali or only Hindi, change `--languages bn hi` to `--language
   --vocab_size 8192
 ```
 
-### 4. Inspect the model size
+### 5. Check model parameter count
 
 ```python
 !python scripts/inspect_model.py
 ```
 
-### 5. Train CrazeLM
+### 6. Run a short smoke training first
+
+Use a short run to catch environment or data problems before committing to a longer session:
+
+```python
+!python train.py \
+  --train_dir /kaggle/working/crazelm_data/train \
+  --val_dir /kaggle/working/crazelm_data/validation \
+  --tokenizer /kaggle/working/tokenizer/tokenizer.model \
+  --output_dir /kaggle/working/crazelm_smoke \
+  --epochs 1 \
+  --batch_size 4 \
+  --seq_len 64 \
+  --steps_per_epoch 10 \
+  --eval_steps 2 \
+  --save_every 10
+```
+
+If that finishes and creates `best.pt`, run the longer training job:
 
 ```python
 !python train.py \
@@ -71,38 +100,38 @@ To prepare only Bengali or only Hindi, change `--languages bn hi` to `--language
   --batch_size 16 \
   --seq_len 64 \
   --steps_per_epoch 1000 \
-  --eval_steps 50
+  --eval_steps 50 \
+  --save_every 250
 ```
 
-If the GPU runs out of memory, lower `--batch_size` to 8 or 4. The first run should be treated as a pipeline test, not a quality-trained release. Inspect validation loss and evaluate English, Bengali and Hindi predictions separately.
+If CUDA runs out of memory, reduce `--batch_size` to 8 or 4. The WikiText-2 corpus is small, so a longer run repeatedly samples from it; more steps do not replace the need for a larger and more suitable dataset.
 
-### 6. Download the checkpoint
+### 7. Inspect outputs
 
 ```python
-!cd /kaggle/working && zip -r CrazeLM-checkpoint.zip crazelm tokenizer crazelm_data/DATASET_MANIFEST.json
-from IPython.display import FileLink
-FileLink("/kaggle/working/CrazeLM-checkpoint.zip")
+!ls -lh /kaggle/working/crazelm
+!cat /kaggle/working/crazelm/metrics.jsonl
 ```
 
-Kaggle output files are temporary unless you save/download them or commit the notebook output as a Kaggle dataset.
+### 8. Package the checkpoint
 
-## Dataset details and attribution
+```python
+!cd /kaggle/working && zip -r CrazeLM-English-checkpoint.zip crazelm tokenizer crazelm_data/DATASET_MANIFEST.json
+from IPython.display import FileLink
+FileLink("/kaggle/working/CrazeLM-English-checkpoint.zip")
+```
 
-- Dataset: [AI4Bharat Samanantar](https://huggingface.co/datasets/ai4bharat/samanantar)
-- License: CC BY-NC 4.0
-- Paper: Ramesh et al., *Samanantar: The Largest Publicly Available Parallel Corpora Collection for 11 Indic Languages*, TACL 2022.
-- DOI: https://doi.org/10.1162/tacl_a_00452
+Download the zip from the notebook output. Kaggle working files are temporary unless downloaded or saved as a Kaggle output/dataset.
 
-The dataset is parallel translation text, not a representative sample of everyday keyboard typing. It is useful for an initial multilingual language-model experiment, but additional appropriately licensed conversational, editorial and general-domain text is needed for strong keyboard suggestions.
+## Training implementation notes
 
-## Planned outputs
+- Each text line is encoded independently and terminated with SentencePiece EOS so separate examples do not silently merge.
+- Token IDs are stored as uint16; the tokenizer script enforces a vocabulary limit compatible with that storage.
+- Training and validation streams are checked for minimum length.
+- Batch sampling includes the final valid starting position.
+- Validation loss is evaluated during checkpointing; both `last.pt` and best-validation `best.pt` are saved with optimizer/scaler state and model configuration.
+- No Hugging Face `datasets` package is needed for the default data preparation path.
 
-- tokenizer.model and tokenizer.vocab
-- best.pt and periodic checkpoints
-- metrics.jsonl
-- model_config.json
-- DATASET_MANIFEST.json
+## What this model is and is not
 
-## Limitations
-
-This first version is a next-token model, not a complete autocorrect engine. Quantization, Android integration, latency/RAM profiling, and language-specific evaluation are later stages. FP32 weights alone for 10.27M parameters are about 41 MB; FP16 about 20.5 MB; INT8 about 10.3 MB before overhead.
+CrazeLM is currently a small next-token language model. It is not yet a complete keyboard engine: autocorrect, typo correction, candidate ranking, personalization, phrase completion, quantization, Android runtime integration, and on-device latency/RAM profiling remain separate work. A 10M-parameter count does not guarantee useful predictions; evaluate perplexity and real keyboard top-k suggestions on held-out English text before integrating it into CrazeKeyboard.
