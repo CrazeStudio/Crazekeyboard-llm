@@ -1,0 +1,99 @@
+name: Export CrazeLM GGUF
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "crazelm/**"
+      - "scripts/export_gguf.py"
+      - ".github/workflows/export-gguf.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  export-and-smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install conversion dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install sentencepiece numpy
+
+      - name: Download llama.cpp GGUF writer
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
+          pip install /tmp/llama.cpp/gguf-py
+
+      - name: Download CrazeLM v1.0 release
+        run: |
+          mkdir -p artifacts/source artifacts/output
+          curl --fail --location --retry 3 --retry-delay 2 \
+            "https://github.com/CrazeStudio/Crazekeyboard-llm/releases/download/v1.0/CrazeLM-30M-v1.0.zip" \
+            --output artifacts/CrazeLM-30M-v1.0.zip
+          unzip -q artifacts/CrazeLM-30M-v1.0.zip -d artifacts/source
+          echo "Release contents:"
+          find artifacts/source -type f -printf '%p (%s bytes)\\n'
+
+      - name: Locate checkpoint and tokenizer
+        id: inputs
+        shell: bash
+        run: |
+          CHECKPOINT="$(find artifacts/source -type f -name 'best.pt' | head -n 1)"
+          if [ -z "$CHECKPOINT" ]; then
+            CHECKPOINT="$(find artifacts/source -type f -name '*.pt' | head -n 1)"
+          fi
+          TOKENIZER="$(find artifacts/source -type f -name 'tokenizer.model' | head -n 1)"
+          if [ -z "$CHECKPOINT" ] || [ -z "$TOKENIZER" ]; then
+            echo "::error::Release ZIP must contain a .pt checkpoint and tokenizer.model."
+            exit 1
+          fi
+          echo "checkpoint=$CHECKPOINT" >> "$GITHUB_OUTPUT"
+          echo "tokenizer=$TOKENIZER" >> "$GITHUB_OUTPUT"
+
+      - name: Convert PyTorch checkpoint to GGUF
+        run: |
+          python scripts/export_gguf.py \
+            --checkpoint "${{ steps.inputs.outputs.checkpoint }}" \
+            --tokenizer "${{ steps.inputs.outputs.tokenizer }}" \
+            --output artifacts/output/CrazeLM-30M-F16.gguf
+
+      - name: Build llama.cpp CPU runtime
+        run: |
+          cmake -S /tmp/llama.cpp -B /tmp/llama.cpp/build \
+            -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=ON
+          cmake --build /tmp/llama.cpp/build --config Release --target llama-cli -j 2
+
+      - name: Runtime load and generation smoke test
+        run: |
+          /tmp/llama.cpp/build/bin/llama-cli \
+            --model artifacts/output/CrazeLM-30M-F16.gguf \
+            --prompt "I am going to" --n-predict 2 --ctx-size 128 \
+            --no-display-prompt --no-warmup
+
+      - name: Generate SHA-256 checksum
+        run: |
+          cd artifacts/output
+          sha256sum CrazeLM-30M-F16.gguf > CrazeLM-30M-F16.gguf.sha256
+          cat CrazeLM-30M-F16.gguf.sha256
+
+      - name: Upload GGUF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrazeLM-30M-GGUF-F16
+          path: |
+            artifacts/output/CrazeLM-30M-F16.gguf
+            artifacts/output/CrazeLM-30M-F16.gguf.sha256
+          if-no-files-found: error
+          retention-days: 30
