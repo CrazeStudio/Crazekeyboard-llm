@@ -116,15 +116,31 @@ def find_artifact(root: Path, name: str) -> Path:
     return sorted(matches, key=lambda p: (len(p.parts), str(p)))[0]
 
 
-def load_checkpoint(path: Path):
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    if not isinstance(checkpoint, dict) or "model" not in checkpoint or "config" not in checkpoint:
-        raise RuntimeError("Checkpoint must contain 'model' and 'config' entries.")
-    config = CrazeLMConfig(**checkpoint["config"])
-    model = CrazeLM(config)
-    model.load_state_dict(checkpoint["model"], strict=True)
+def load_release_model(root: Path):
+    # The v1.0 release archive is a deployment bundle: model.pt is an FP16
+    # state_dict, while config.json contains the checkpoint metadata.
+    weights_path = find_artifact(root, "model.pt")
+    config_path = find_artifact(root, "config.json")
+    release_config = json.loads(config_path.read_text(encoding="utf-8"))
+    config_fields = {
+        "vocab_size", "max_seq_len", "d_model", "n_layers",
+        "n_heads", "d_ff", "dropout",
+    }
+    model_config = CrazeLMConfig(**{
+        key: release_config[key] for key in config_fields if key in release_config
+    })
+    model = CrazeLM(model_config)
+    state_dict = torch.load(weights_path, map_location="cpu", weights_only=False)
+    if not isinstance(state_dict, dict) or not state_dict:
+        raise RuntimeError("The release model.pt is not a PyTorch state_dict.")
+    model.load_state_dict(state_dict, strict=True)
     model.eval()
-    return model, checkpoint
+    metadata = {
+        "step": release_config.get("checkpoint_step"),
+        "val_loss": release_config.get("validation_loss"),
+        "weight_dtype": release_config.get("weight_dtype"),
+    }
+    return model, metadata
 
 
 def encode_prompt(tokenizer, prompt: str, length: int) -> tuple[np.ndarray, np.ndarray]:
@@ -153,10 +169,9 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="crazelm-tflite-") as temp:
         extracted = Path(temp)
         extract_release(args.archive, extracted)
-        checkpoint_path = find_artifact(extracted, "best.pt")
         tokenizer_path = find_artifact(extracted, "tokenizer.model")
         tokenizer = spm.SentencePieceProcessor(model_file=str(tokenizer_path))
-        model, checkpoint = load_checkpoint(checkpoint_path)
+        model, checkpoint = load_release_model(extracted)
 
         if tokenizer.get_piece_size() != model.cfg.vocab_size:
             raise RuntimeError(
