@@ -64,6 +64,29 @@ Before training the tokenizer, build a larger, diverse, properly licensed Englis
 
 The final dataset should be much larger than 50,000 utterances. A 30M model trained on a tiny corpus will overfit regardless of the parameter count.
 
+## 2A. Add a larger English source: WikiText-103
+
+The DailyDialog mirror alone is too small. Add WikiText-103 from Salesforce, which contains over 100 million Wikipedia-derived tokens and has separate train/validation/test splits. The Hugging Face card lists CC-BY-SA-3.0 and GFDL metadata, while its prose also references CC BY-SA 4.0. Review the card and original Wikipedia terms, preserve attribution, and understand share-alike obligations before redistribution.
+
+Pull the latest repository and run:
+
+    !git pull origin main
+    !python scripts/add_wikitext.py --corpus_dir /kaggle/working/crazelm_data --cache_dir /kaggle/working/wikitext_downloads --min_added_train_chars 100000000
+
+This downloads the two training Parquet shards and the validation/test shards, reads them in batches, normalizes text, filters obvious markup/short fragments, and performs disk-backed exact case-insensitive deduplication within each WikiText split. It writes separate wikitext103.txt files into the existing train, validation, and test directories, so the existing DailyDialog text remains present and the training scripts discover both sources recursively. Downloaded Parquet files and the SQLite deduplication indexes are cached separately.
+
+Check the combined corpus:
+
+    from pathlib import Path
+    for split in ["train", "validation", "test"]:
+        folder = Path("/kaggle/working/crazelm_data") / split
+        files = list(folder.glob("*.txt"))
+        lines = sum(sum(1 for x in f.open(encoding="utf-8") if x.strip()) for f in files)
+        chars = sum(len(f.read_text(encoding="utf-8")) for f in files)
+        print(split, "files:", [f.name for f in files], "lines:", lines, "characters:", chars)
+
+Do not proceed unless the training corpus meets the tokenizer script's 100,000-line and 100-million-character guards. These are minimum checks, not proof of sufficient linguistic diversity. Keep validation and test data out of tokenizer/model training.
+
 ## 3. Train the exact 100k tokenizer
 
 Run this only after the training corpus has enough genuine data:
