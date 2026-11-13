@@ -174,3 +174,14 @@ CRAZELM_CHECKPOINT=release/path/to/best.pt CRAZELM_ONNX=CrazeLM-30M-v1.0.onnx py
 The ONNX graph accepts `input_ids` (int64 token IDs) and returns `logits` with shape `[batch, sequence, 100000]`. The sequence length may vary up to the checkpoint's configured maximum (128 for the current target). The SentencePiece tokenizer is still required by the Android app to turn text into token IDs and decode predicted token IDs.
 
 This workflow produces an ONNX model artifact; it does not yet integrate ONNX Runtime into the Android keyboard app or implement word-level suggestion ranking.
+
+
+### Supported PyTorch artifact types
+
+The exporter does not assume that a `.pt` file is a training-checkpoint dictionary. It attempts, in order:
+1. TorchScript serialized module
+2. Full `torch.nn.Module` saved with `torch.save`
+3. Training checkpoint containing `model` and optional `config`
+4. Raw tensor `state_dict` matching the repository's default CrazeLM architecture
+
+A bare state dict has no architecture metadata, so the default 30M configuration is used and strict weight loading must match exactly. If the `.pt` contains a complete module, its forward output is normalized to logits. Unsupported payload types and incompatible weights fail with a diagnostic rather than silently exporting random weights.
