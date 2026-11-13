@@ -55,8 +55,12 @@ def load_checkpoint(path: Path, config_path: Path):
     model.eval()
     return model, cfg, artifact
 
-def tensor_array(tensor: torch.Tensor) -> np.ndarray:
-    return tensor.detach().cpu().contiguous().to(torch.float16).numpy()
+def tensor_array(tensor: torch.Tensor, *, keep_fp32: bool = False) -> np.ndarray:
+    # llama.cpp GPT-2 adds token and learned-position embeddings before the
+    # first block. Keep the position table FP32 to match the FP32 embedding
+    # activation and avoid unsupported mixed-FP16 binary addition in ggml.
+    dtype = torch.float32 if keep_fp32 else torch.float16
+    return tensor.detach().cpu().contiguous().to(dtype).numpy()
 
 
 def export(checkpoint: Path, tokenizer_path: Path, config_path: Path, output: Path):
@@ -147,7 +151,10 @@ def export(checkpoint: Path, tokenizer_path: Path, config_path: Path, output: Pa
     # The output projection is tied to token_embd.weight; GPT-2 GGUF loaders
     # use the token embedding as the output matrix when no separate head exists.
     for name, tensor in tensors:
-        writer.add_tensor(name, tensor_array(tensor))
+        writer.add_tensor(
+            name,
+            tensor_array(tensor, keep_fp32=(name == "position_embd.weight")),
+        )
 
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
