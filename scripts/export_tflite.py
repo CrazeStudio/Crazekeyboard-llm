@@ -21,6 +21,11 @@ from torch import nn
 import torch.nn.functional as F
 import litert_torch
 
+ROOT = Path(__file__).resolve().parents[1]
+import sys
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from crazelm.model import CrazeLM, CrazeLMConfig
 
 
