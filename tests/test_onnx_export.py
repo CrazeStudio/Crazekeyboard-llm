@@ -1,7 +1,4 @@
-"""Numerical parity test for the exported CrazeLM ONNX graph.
-
-The release workflow sets CRAZELM_CHECKPOINT and CRAZELM_ONNX after exporting.
-"""
+"""Numerical parity test for the exported CrazeLM ONNX graph."""
 import os
 from pathlib import Path
 import sys
@@ -16,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from crazelm.model import CrazeLM, CrazeLMConfig
+from scripts.export_onnx import LogitsOnly, load_model
 
 
 @pytest.fixture(scope="module")
@@ -28,20 +25,17 @@ def exported_model():
 
     checkpoint_path = Path(checkpoint_value)
     onnx_path = Path(onnx_value)
-    assert checkpoint_path.is_file(), f"Missing checkpoint: {checkpoint_path}"
+    assert checkpoint_path.is_file(), f"Missing .pt artifact: {checkpoint_path}"
     assert onnx_path.is_file(), f"Missing ONNX model: {onnx_path}"
 
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    config = CrazeLMConfig(**checkpoint["config"])
-    model = CrazeLM(config).cpu().eval()
-    model.load_state_dict(checkpoint["model"], strict=True)
-
+    model, config, _ = load_model(checkpoint_path, torch.device("cpu"))
+    wrapper = LogitsOnly(model).eval()
     graph = onnx.load(str(onnx_path))
     onnx.checker.check_model(graph)
     session = ort.InferenceSession(
         str(onnx_path), providers=["CPUExecutionProvider"]
     )
-    return config, model, session
+    return config, wrapper, session
 
 
 @pytest.mark.parametrize("batch,sequence", [(1, 1), (1, 7), (2, 16)])
@@ -54,7 +48,7 @@ def test_onnx_logits_match_pytorch(exported_model, batch, sequence):
     )
 
     with torch.inference_mode():
-        expected, _ = model(torch.from_numpy(input_ids))
+        expected = model(torch.from_numpy(input_ids))
     actual = session.run(
         ["logits"], {"input_ids": input_ids.astype(np.int64)}
     )[0]
