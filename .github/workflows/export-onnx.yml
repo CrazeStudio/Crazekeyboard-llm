@@ -17,7 +17,7 @@ on:
       - ".github/workflows/export-onnx.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   export-and-test:
@@ -94,3 +94,13 @@ jobs:
             artifacts/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish ONNX model to v1.0 release
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload v1.0 \
+            artifacts/CrazeLM-30M-v1.0.onnx \
+            artifacts/SHA256SUMS.txt \
+            --clobber
