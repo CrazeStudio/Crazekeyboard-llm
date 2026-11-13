@@ -46,8 +46,8 @@ Inspect the architecture before training:
 Expected output is approximately:
 
     Trainable parameters: 29,582,080
-    FP32 weights: 118.34 MB
-    FP16 weights: 59.17 MB
+    FP32 weights: 118.33 MB
+    FP16 weights: 59.16 MB
     INT8 weights (ideal): 29.58 MB
 
 These are raw weight sizes only. Runtime memory is higher because of activations, gradients, optimizer states, and temporary buffers.
