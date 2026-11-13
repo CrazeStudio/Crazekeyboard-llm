@@ -1,26 +1,24 @@
 # CrazeLM
 
-Compact, English-only causal Transformer prototype for CrazeKeyboard next-token suggestions. Training is intended for Kaggle GPU; Android inference/export is a later stage.
+CrazeLM is a compact English causal Transformer intended to provide next-token candidates for CrazeKeyboard. This repository contains the model, corpus preparation, tokenizer training, Kaggle training, checkpoint evaluation, and a prediction CLI.
 
-## Status
-
-**This repository contains training code, not trained weights.** No accuracy, keyboard quality, or Android performance is claimed until a training run and evaluation are completed.
+> **Training status:** Source code is maintained here; trained weights are produced in the user's Kaggle session and are not committed to Git. A successful smoke test only verifies the pipeline. Do not treat a checkpoint as keyboard-ready until held-out evaluation and real typing tests pass.
 
 ## Model
 
 - Decoder-only causal Transformer
 - 4 layers, width 384, 6 attention heads, FFN width 1536
-- SentencePiece BPE tokenizer, target vocabulary 8,192 with byte fallback
+- SentencePiece BPE tokenizer (target vocabulary 8,192, byte fallback)
 - Tied token embedding/output projection
-- Context length: 64 tokens
-- Approximately 10.27M parameters (the exact count is printed by `scripts/inspect_model.py`)
-- Training language: English only
+- Context length 64 tokens
+- Approximately 10.27M parameters
+- English-only training pipeline
 
-## Kaggle setup
+This is a small language model, not a general-purpose ChatGPT replacement.
 
-Create a Kaggle notebook, enable a GPU, and run each cell in order. Internet must be enabled for the initial dataset download.
+## 1. Kaggle setup
 
-### 1. Clone and install
+Create a Kaggle notebook, enable a GPU (T4/P100 if available), and enable Internet.
 
 ```python
 !git clone https://github.com/CrazeStudio/Crazekeyboard-llm.git
@@ -28,34 +26,41 @@ Create a Kaggle notebook, enable a GPU, and run each cell in order. Internet mus
 !pip install -q -r requirements.txt
 ```
 
-The requirements deliberately do not install Hugging Face `datasets` or upgrade `pyarrow`/Pillow. Dataset preparation reads the small Parquet split files with Kaggle's preinstalled pandas/pyarrow and does not use the retired S3 archive URL. If you already cloned the repository in this session, use `%cd /kaggle/working/Crazekeyboard-llm` instead of cloning again.
+For an existing clone, use `%cd /kaggle/working/Crazekeyboard-llm` and `!git pull origin main`.
 
-### 2. Check GPU and imports
+Check the runtime:
 
 ```python
-import torch, sentencepiece, numpy
+import torch, sentencepiece, numpy, pandas, pyarrow
 print("PyTorch:", torch.__version__)
 print("SentencePiece:", sentencepiece.__version__)
-print("NumPy:", numpy.__version__)
-print("CUDA available:", torch.cuda.is_available())
+print("CUDA:", torch.cuda.is_available())
+print("PyArrow:", pyarrow.__version__)
 !nvidia-smi
 ```
 
-### 3. Prepare English-only data
+## 2. Prepare a conversational English corpus
+
+The default pipeline downloads the train, validation, and test Parquet splits from the Hugging Face mirror `anezatra/dailydialog`. The mirror describes DailyDialog as human-written everyday multi-turn conversations and labels it Apache-2.0. Review the dataset card and upstream rights before redistribution.
 
 ```python
 !python scripts/prepare_dataset.py \
-  --output_dir /kaggle/working/crazelm_data
+  --output_dir /kaggle/working/crazelm_data \
+  --min_train_lines 50000
 ```
 
-This downloads the train and validation Parquet files from the Hugging Face-hosted WikiText-2 repository using redirect-aware downloads, validates their Parquet signatures, and creates:
+The script discovers the available Parquet shard names through the Hugging Face dataset API, validates downloaded files, extracts utterances, removes empty/obvious markup and exact duplicate lines, and preserves the dataset's train/validation/test split. It refuses to continue if fewer than 50,000 unique training utterances are extracted. It writes:
+
 - `crazelm_data/train/english.txt`
 - `crazelm_data/validation/english.txt`
+- `crazelm_data/test/english.txt`
 - `crazelm_data/DATASET_MANIFEST.json`
 
-WikiText-2 is a small Wikipedia-derived benchmark corpus. It is suitable for checking that the pipeline runs, but it is **not sufficient by itself for a high-quality keyboard suggestion model**. Before release or commercial use, verify the dataset's current license and attribution obligations. For stronger keyboard predictions, add a larger, appropriately licensed English corpus representative of natural typing. You can prepare your own .txt corpus with `--input_dir /path/to/english_text_folder`.
+If the script reports fewer than 50,000 lines, inspect the schema/error rather than fabricating or duplicating examples. Dataset size alone does not guarantee good keyboard predictions.
 
-### 4. Train the English tokenizer
+## 3. Train a fresh tokenizer
+
+Train the tokenizer on training text only; validation and test data must not leak into tokenizer training.
 
 ```python
 !python scripts/train_tokenizer.py \
@@ -64,15 +69,14 @@ WikiText-2 is a small Wikipedia-derived benchmark corpus. It is suitable for che
   --vocab_size 8192
 ```
 
-### 5. Check model parameter count
+Verify the artifacts:
 
 ```python
+!ls -lh /kaggle/working/tokenizer/
 !python scripts/inspect_model.py
 ```
 
-### 6. Run a short smoke training first
-
-Use a short run to catch environment or data problems before committing to a longer session:
+## 4. Smoke test training
 
 ```python
 !python train.py \
@@ -80,15 +84,13 @@ Use a short run to catch environment or data problems before committing to a lon
   --val_dir /kaggle/working/crazelm_data/validation \
   --tokenizer /kaggle/working/tokenizer/tokenizer.model \
   --output_dir /kaggle/working/crazelm_smoke \
-  --epochs 1 \
-  --batch_size 4 \
-  --seq_len 64 \
-  --steps_per_epoch 10 \
-  --eval_steps 2 \
-  --save_every 10
+  --epochs 1 --batch_size 4 --seq_len 64 \
+  --steps_per_epoch 10 --eval_steps 2 --save_every 10
 ```
 
-If that finishes and creates `best.pt`, run the longer training job:
+Confirm `best.pt` exists before moving on. This is only a pipeline check, not a meaningful training run.
+
+## 5. Train CrazeLM
 
 ```python
 !python train.py \
@@ -96,42 +98,67 @@ If that finishes and creates `best.pt`, run the longer training job:
   --val_dir /kaggle/working/crazelm_data/validation \
   --tokenizer /kaggle/working/tokenizer/tokenizer.model \
   --output_dir /kaggle/working/crazelm \
-  --epochs 3 \
-  --batch_size 16 \
-  --seq_len 64 \
-  --steps_per_epoch 1000 \
-  --eval_steps 50 \
-  --save_every 250
+  --epochs 5 --batch_size 16 --seq_len 64 \
+  --steps_per_epoch 1000 --eval_steps 50 --save_every 250
 ```
 
-If CUDA runs out of memory, reduce `--batch_size` to 8 or 4. The WikiText-2 corpus is small, so a longer run repeatedly samples from it; more steps do not replace the need for a larger and more suitable dataset.
+If CUDA runs out of memory, reduce `--batch_size` to 8 or 4. Monitor validation loss; stop and investigate if it rises consistently while training loss falls. Kaggle sessions can time out, so download/save checkpoints and dataset outputs between sessions.
 
-### 7. Inspect outputs
+## 6. Evaluate on held-out test data
 
 ```python
-!ls -lh /kaggle/working/crazelm
-!cat /kaggle/working/crazelm/metrics.jsonl
+!python scripts/evaluate.py \
+  --checkpoint /kaggle/working/crazelm/best.pt \
+  --tokenizer /kaggle/working/tokenizer/tokenizer.model \
+  --test_dir /kaggle/working/crazelm_data/test
 ```
 
-### 8. Package the checkpoint
+This reports test loss, perplexity, and top-1/top-5 token accuracy. These are language-model metrics, not keyboard word-suggestion accuracy.
+
+## 7. Test next-token predictions
 
 ```python
-!cd /kaggle/working && zip -r CrazeLM-English-checkpoint.zip crazelm tokenizer crazelm_data/DATASET_MANIFEST.json
-from IPython.display import FileLink
-FileLink("/kaggle/working/CrazeLM-English-checkpoint.zip")
+!python scripts/predict.py \
+  --checkpoint /kaggle/working/crazelm/best.pt \
+  --tokenizer /kaggle/working/tokenizer/tokenizer.model \
+  --text "I am going to" \
+  --top_k 8
 ```
 
-Download the zip from the notebook output. Kaggle working files are temporary unless downloaded or saved as a Kaggle output/dataset.
+Try multiple prompts and inspect whether candidates change appropriately with context. SentencePiece can return subword fragments; this CLI exposes raw next-token pieces, not a final user-facing keyboard candidate ranker.
 
-## Training implementation notes
+## 8. Package the trained artifacts
 
-- Each text line is encoded independently and terminated with SentencePiece EOS so separate examples do not silently merge.
-- Token IDs are stored as uint16; the tokenizer script enforces a vocabulary limit compatible with that storage.
-- Training and validation streams are checked for minimum length.
-- Batch sampling includes the final valid starting position.
-- Validation loss is evaluated during checkpointing; both `last.pt` and best-validation `best.pt` are saved with optimizer/scaler state and model configuration.
-- No Hugging Face `datasets` package is needed for the default data preparation path.
+```python
+!cd /kaggle/working && zip -r CrazeLM-English.zip \
+  crazelm/best.pt crazelm/last.pt crazelm/model_config.json \
+  tokenizer/tokenizer.model tokenizer/tokenizer.vocab \
+  crazelm_data/DATASET_MANIFEST.json
 
-## What this model is and is not
+from IPython.display import FileLink, display
+display(FileLink("/kaggle/working/CrazeLM-English.zip"))
+```
 
-CrazeLM is currently a small next-token language model. It is not yet a complete keyboard engine: autocorrect, typo correction, candidate ranking, personalization, phrase completion, quantization, Android runtime integration, and on-device latency/RAM profiling remain separate work. A 10M-parameter count does not guarantee useful predictions; evaluate perplexity and real keyboard top-k suggestions on held-out English text before integrating it into CrazeKeyboard.
+Keep the dataset files and manifest with the model so its provenance is traceable. Kaggle working files are temporary until downloaded or saved as notebook output.
+
+## Current scope and remaining engineering
+
+Implemented in this repository:
+- English conversational corpus download and preparation
+- Train/validation/test separation and basic cleaning/deduplication
+- SentencePiece tokenizer training
+- Causal Transformer training and checkpoint saving
+- Held-out language-model evaluation
+- CLI for inspecting next-token candidates
+
+Still required before production keyboard integration:
+- Larger and more diverse appropriately licensed English typing corpus
+- Word-level candidate assembly and ranking (subword tokens are not complete words)
+- Autocorrect and typo correction
+- Keyboard-specific top-k evaluation on a separate real typing benchmark
+- Personalization with privacy-preserving local adaptation
+- Quantization/export and Android runtime integration
+- On-device latency, memory, battery, and crash testing
+- Filtering/guardrails for unwanted suggestions
+
+No trained weights, measured keyboard accuracy, or Android integration are included by default. The training run must be completed and evaluated in Kaggle.
