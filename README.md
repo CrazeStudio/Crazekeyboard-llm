@@ -14,25 +14,86 @@ Experimental compact causal Transformer for CrazeKeyboard next-token prediction.
 - Tied token embedding/output projection
 - Maximum context: 64 tokens
 - Approximately 10.27M parameters; exact count is printed by the model code
-- English, Bengali and Hindi are tokenizer/training targets; actual quality depends on balanced, licensed data
+- English, Bengali and Hindi are tokenizer/training targets; actual quality depends on balanced training data
 
-## Kaggle workflow
+## Direct Kaggle setup
 
-1. Create a Kaggle notebook and enable a GPU.
-2. Add a dataset containing UTF-8 text files that you have permission to use.
-3. Clone/upload this repository and install dependencies with `pip install -r requirements.txt`.
-4. Train tokenizer, then model:
+Create a Kaggle notebook, enable a GPU, then run these cells in order.
 
-```bash
-python scripts/train_tokenizer.py --input_dir /kaggle/input/YOUR_DATASET --output_dir artifacts/tokenizer --vocab_size 8192
-python train.py --train_dir /kaggle/input/YOUR_DATASET --tokenizer artifacts/tokenizer/tokenizer.model --output_dir /kaggle/working/crazelm --epochs 3 --batch_size 32
+### 1. Clone the repository and install dependencies
+
+```python
+!git clone https://github.com/CrazeStudio/Crazekeyboard-llm.git
+%cd Crazekeyboard-llm
+!pip install -q -r requirements.txt
 ```
 
-Start with a small subset to validate the pipeline. Adjust batch size to GPU memory. Checkpoints are saved periodically because Kaggle sessions can stop.
+### 2. Download and prepare training data
 
-## Data policy
+This uses AI4Bharat Samanantar, which provides English-Bengali and English-Hindi parallel text. The script streams a limited number of pairs and writes separate training and validation directories; it does not download the full multi-gigabyte corpus.
 
-Use clean, deduplicated datasets with licenses that permit model training. Avoid private messages, passwords, personal data, and unlicensed scraped books. Keep validation data separate from training data.
+**License warning:** Samanantar is licensed CC BY-NC 4.0 (Attribution-NonCommercial). This is not suitable for commercial model training/distribution without separate permission. Review the license and attribution requirements before proceeding. The explicit flag below acknowledges this restriction; it does not grant additional rights.
+
+```python
+!python scripts/prepare_dataset.py \
+  --output_dir /kaggle/working/crazelm_data \
+  --languages bn hi \
+  --max_pairs_per_language 100000 \
+  --accept_cc_by_nc
+```
+
+To prepare only Bengali or only Hindi, change `--languages bn hi` to `--languages bn` or `--languages hi`.
+
+### 3. Train the tokenizer
+
+```python
+!python scripts/train_tokenizer.py \
+  --input_dir /kaggle/working/crazelm_data/train \
+  --output_dir /kaggle/working/tokenizer \
+  --vocab_size 8192
+```
+
+### 4. Inspect the model size
+
+```python
+!python scripts/inspect_model.py
+```
+
+### 5. Train CrazeLM
+
+```python
+!python train.py \
+  --train_dir /kaggle/working/crazelm_data/train \
+  --val_dir /kaggle/working/crazelm_data/validation \
+  --tokenizer /kaggle/working/tokenizer/tokenizer.model \
+  --output_dir /kaggle/working/crazelm \
+  --epochs 3 \
+  --batch_size 16 \
+  --seq_len 64 \
+  --steps_per_epoch 1000 \
+  --eval_steps 50
+```
+
+If the GPU runs out of memory, lower `--batch_size` to 8 or 4. The first run should be treated as a pipeline test, not a quality-trained release. Inspect validation loss and evaluate English, Bengali and Hindi predictions separately.
+
+### 6. Download the checkpoint
+
+```python
+!cd /kaggle/working && zip -r CrazeLM-checkpoint.zip crazelm tokenizer crazelm_data/DATASET_MANIFEST.json
+from IPython.display import FileLink
+FileLink("/kaggle/working/CrazeLM-checkpoint.zip")
+```
+
+Kaggle output files are temporary unless you save/download them or commit the notebook output as a Kaggle dataset.
+
+## Dataset details and attribution
+
+- Dataset: [AI4Bharat Samanantar](https://huggingface.co/datasets/ai4bharat/samanantar)
+- License: CC BY-NC 4.0
+- Paper: Ramesh et al., *Samanantar: The Largest Publicly Available Parallel Corpora Collection for 11 Indic Languages*, TACL 2022.
+- DOI: https://doi.org/10.1162/tacl_a_00452
+
+The dataset is parallel translation text, not a representative sample of everyday keyboard typing. It is useful for an initial multilingual language-model experiment, but additional appropriately licensed conversational, editorial and general-domain text is needed for strong keyboard suggestions.
 
 ## Planned outputs
 
@@ -40,6 +101,7 @@ Use clean, deduplicated datasets with licenses that permit model training. Avoid
 - best.pt and periodic checkpoints
 - metrics.jsonl
 - model_config.json
+- DATASET_MANIFEST.json
 
 ## Limitations
 
