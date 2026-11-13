@@ -23,7 +23,7 @@ SPLITS = {
 
 def clean_line(value: str) -> str:
     value = value.replace("@-@", "-").replace("@,@", ",").replace("@.@", ".")
-    value = re.sub(r"\\s+", " ", value).strip()
+    value = re.sub(r"\s+", " ", value).strip()
     if not value or (value.startswith("=") and value.endswith("=")):
         return ""
     if not re.search(r"[A-Za-z]", value):
@@ -172,7 +172,7 @@ def main():
 
     for folder, lines in ((train_dir, train), (val_dir, validation)):
         with (folder / "english.txt").open("w", encoding="utf-8") as target:
-            target.write("\\n".join(lines) + "\\n")
+            target.write("\n".join(lines) + "\n")
 
     manifest = {
         "dataset": source_name,
