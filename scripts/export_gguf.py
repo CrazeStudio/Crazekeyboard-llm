@@ -57,8 +57,8 @@ def load_checkpoint(path: Path, config_path: Path):
 
 def tensor_array(tensor: torch.Tensor, *, keep_fp32: bool = False) -> np.ndarray:
     # llama.cpp GPT-2 adds token and learned-position embeddings before the
-    # first block. Keep the position table FP32 to match the FP32 embedding
-    # activation and avoid unsupported mixed-FP16 binary addition in ggml.
+    # first block. Keep BOTH tables FP32: ggml's CPU path cannot add an F16
+    # token embedding tensor to an F32 position embedding tensor.
     dtype = torch.float32 if keep_fp32 else torch.float16
     return tensor.detach().cpu().contiguous().to(dtype).numpy()
 
@@ -153,7 +153,7 @@ def export(checkpoint: Path, tokenizer_path: Path, config_path: Path, output: Pa
     for name, tensor in tensors:
         writer.add_tensor(
             name,
-            tensor_array(tensor, keep_fp32=(name == "position_embd.weight")),
+            tensor_array(tensor, keep_fp32=(name in {"token_embd.weight", "position_embd.weight"})),
         )
 
     output.parent.mkdir(parents=True, exist_ok=True)
