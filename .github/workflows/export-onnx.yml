@@ -69,7 +69,7 @@ jobs:
         run: |
           python scripts/export_onnx.py \
             --checkpoint "${{ steps.checkpoint.outputs.path }}" \
-            --output artifacts/CrazeLM-30M-v1.0.onnx \
+            --output artifacts/CrazeLM-30M-v1.0-fp16.onnx \
             --opset 18
 
       - name: Test ONNX graph against PyTorch
