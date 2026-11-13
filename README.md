@@ -159,7 +159,7 @@ The repository includes a GitHub Actions workflow at `.github/workflows/export-o
 
 `https://github.com/CrazeStudio/Crazekeyboard-llm/releases/download/v1.0/CrazeLM-30M-v1.0.zip`
 
-The workflow extracts the archive, selects `best.pt` when present (otherwise the first `.pt` checkpoint), exports its checkpoint weights to `CrazeLM-30M-v1.0.onnx`, validates the ONNX graph, and runs numerical parity tests against PyTorch on several batch and sequence sizes. It uploads the ONNX file, original ZIP, and SHA-256 checksums as a workflow artifact.
+The workflow extracts the archive, selects `best.pt` when present (otherwise the first `.pt` checkpoint), exports a compact FP16 graph to `CrazeLM-30M-v1.0-fp16.onnx`, validates the ONNX graph, and runs numerical parity tests against PyTorch on several batch and sequence sizes. It uploads the ONNX file, original ZIP, and SHA-256 checksums as a workflow artifact.
 
 To export locally:
 
@@ -167,11 +167,11 @@ To export locally:
 pip install -r requirements.txt
 pip install "onnx>=1.16" "onnxruntime>=1.18" "pytest>=8"
 unzip CrazeLM-30M-v1.0.zip -d release
-python scripts/export_onnx.py --checkpoint release/path/to/best.pt --output CrazeLM-30M-v1.0.onnx
-CRAZELM_CHECKPOINT=release/path/to/best.pt CRAZELM_ONNX=CrazeLM-30M-v1.0.onnx pytest -q tests/test_onnx_export.py
+python scripts/export_onnx.py --checkpoint release/path/to/best.pt --output CrazeLM-30M-v1.0-fp16.onnx
+CRAZELM_CHECKPOINT=release/path/to/best.pt CRAZELM_ONNX=CrazeLM-30M-v1.0-fp16.onnx pytest -q tests/test_onnx_export.py
 ```
 
-The ONNX graph accepts `input_ids` (int64 token IDs) and returns `logits` with shape `[batch, sequence, 100000]`. The sequence length may vary up to the checkpoint's configured maximum (128 for the current target). The SentencePiece tokenizer is still required by the Android app to turn text into token IDs and decode predicted token IDs.
+The compact FP16 ONNX graph stores internal weights/compute in FP16 (with int64 token IDs and FP32 logits at the public interface) and accepts `input_ids` and returns `logits` with shape `[batch, sequence, 100000]`. The exporter also deduplicates byte-identical initializers, including CrazeLM's tied input/output embedding weights, so those weights are not stored twice. FP16 weight storage is approximately half FP32; actual file size depends on graph overhead and the release checkpoint. CI enforces an export smaller than 100 MiB. The sequence length may vary up to the checkpoint's configured maximum (128 for the current target). The SentencePiece tokenizer is still required by the Android app to turn text into token IDs and decode predicted token IDs.
 
 This workflow produces an ONNX model artifact; it does not yet integrate ONNX Runtime into the Android keyboard app or implement word-level suggestion ranking.
 
