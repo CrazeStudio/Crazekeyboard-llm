@@ -52,7 +52,7 @@ def download(url, path):
 def clean_sentence(value):
     value = str(value).replace("@-@", "-").replace("@,@", ",").replace("@.@", ".")
     value = re.sub(r"<[^>]{1,40}>", " ", value)
-    value = re.sub(r"\\s+", " ", value).strip()
+    value = re.sub(r"\s+", " ", value).strip()
     if not value or not re.search(r"[A-Za-z]", value):
         return ""
     if len(value) < 2 or len(value) > 1000:
@@ -80,13 +80,13 @@ def split_dialog(value):
     except (json.JSONDecodeError, TypeError):
         pass
     # ShareGPT-like text and newline-delimited dialogue formats.
-    parts = re.split(r"\\n+|(?=(?:Human|Assistant|User|Bot|Speaker [0-9]+)\\s*:)", raw)
+    parts = re.split(r"\n+|(?=(?:Human|Assistant|User|Bot|Speaker [0-9]+)\s*:)", raw)
     return [p for p in parts if p.strip()]
 
 
 def read_split(files, split, cache):
     import pandas as pd
-    paths = [x for x in files if re.search(rf"/{split}[^/]*\\.parquet$", "/" + x)]
+    paths = [x for x in files if re.search(rf"/{split}[^/]*\.parquet$", "/" + x)]
     if not paths:
         raise RuntimeError(f"No Parquet file found for {split} in {DATASET}")
     lines = []
@@ -115,7 +115,7 @@ def read_split(files, split, cache):
 def write_lines(folder, lines):
     folder.mkdir(parents=True, exist_ok=True)
     with (folder / "english.txt").open("w", encoding="utf-8") as out:
-        out.write("\\n".join(lines) + "\\n")
+        out.write("\n".join(lines) + "\n")
 
 
 def main():
