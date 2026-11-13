@@ -60,7 +60,7 @@ def clean_sentence(value):
     # Drop obvious markup/metadata and malformed fragments.
     if value.startswith(("http://", "https://", "{", "[")):
         return ""
-    if re.fullmatch(r"[\\W_\\d]+", value):
+    if re.fullmatch(r"[\W_\d]+", value):
         return ""
     return value
 
@@ -88,7 +88,7 @@ def split_dialog(value):
     except (json.JSONDecodeError, TypeError):
         pass
     # ShareGPT-like text and newline-delimited dialogue formats.
-    parts = re.split(r"\n+|(?=(?:Human|Assistant|User|Bot|Speaker [0-9]+)\s*:)", raw)
+    parts = re.split(r"__eou__|__eot__|\n+|(?=(?:Human|Assistant|User|Bot|Speaker [0-9]+)\s*:)", raw)
     return [p for p in parts if p.strip()]
 
 
