@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a CrazeLM PyTorch checkpoint to ONNX for Android inference."""
+"""Export a CrazeLM PyTorch artifact (checkpoint, state dict, module, or TorchScript) to ONNX."""
 from __future__ import annotations
 
 import argparse
@@ -17,32 +17,104 @@ from crazelm.model import CrazeLM, CrazeLMConfig
 
 
 class LogitsOnly(torch.nn.Module):
-    """Expose only next-token logits; the training loss is not an inference output."""
+    """Normalize CrazeLM's (logits, loss) or logits-only forward to logits."""
 
-    def __init__(self, model: CrazeLM):
+    def __init__(self, model: torch.nn.Module):
         super().__init__()
         self.model = model
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        logits, _ = self.model(input_ids)
-        return logits
+        output = self.model(input_ids)
+        if isinstance(output, (tuple, list)):
+            return output[0]
+        if isinstance(output, dict):
+            if "logits" not in output:
+                raise RuntimeError("Model returned a dict without a 'logits' field.")
+            return output["logits"]
+        return output
+
+
+def _config_from_object(model: torch.nn.Module):
+    cfg = getattr(model, "cfg", None) or getattr(model, "config", None)
+    if isinstance(cfg, CrazeLMConfig):
+        return cfg
+    if isinstance(cfg, dict):
+        allowed = CrazeLMConfig.__dataclass_fields__
+        return CrazeLMConfig(**{k: v for k, v in cfg.items() if k in allowed})
+    # The repository's documented 30M architecture is the fallback for a bare
+    # state_dict, where no config metadata was saved.
+    return CrazeLMConfig()
+
+
+def _load_torchscript(path: Path, device: torch.device):
+    try:
+        module = torch.jit.load(str(path), map_location=device)
+        module.eval()
+        return module
+    except Exception:
+        return None
 
 
 def load_model(checkpoint_path: Path, device: torch.device):
-    # The release checkpoint is a trusted project artifact and contains optimizer
-    # metadata in addition to the model state_dict.
-    checkpoint = torch.load(
+    # TorchScript is a serialized module and is not a Python dict.
+    scripted = _load_torchscript(checkpoint_path, device)
+    if scripted is not None:
+        return scripted, _config_from_object(scripted), {}
+
+    artifact = torch.load(
         checkpoint_path, map_location=device, weights_only=False
     )
-    if not isinstance(checkpoint, dict) or "model" not in checkpoint or "config" not in checkpoint:
-        raise ValueError(
-            "Unsupported checkpoint: expected a dict containing 'model' and 'config'."
+
+    # Some training pipelines serialize the complete nn.Module with torch.save.
+    if isinstance(artifact, torch.nn.Module):
+        artifact.eval()
+        return artifact.to(device), _config_from_object(artifact), {}
+
+    if not isinstance(artifact, dict):
+        raise TypeError(
+            "Unsupported .pt payload type: "
+            f"{type(artifact).__name__}. Expected a TorchScript module, "
+            "a serialized torch.nn.Module, a checkpoint dict, or a state_dict."
         )
-    config = CrazeLMConfig(**checkpoint["config"])
-    model = CrazeLM(config).to(device)
-    model.load_state_dict(checkpoint["model"], strict=True)
-    model.eval()
-    return model, config, checkpoint
+
+    # Standard training checkpoint: {'model': state_dict, 'config': {...}, ...}
+    if "model" in artifact and isinstance(artifact["model"], dict):
+        config_data = artifact.get("config")
+        config = (
+            CrazeLMConfig(**config_data)
+            if isinstance(config_data, dict)
+            else CrazeLMConfig()
+        )
+        model = CrazeLM(config).to(device)
+        model.load_state_dict(artifact["model"], strict=True)
+        model.eval()
+        return model, config, artifact
+
+    # Raw state_dict: {'token_embedding.weight': Tensor, ...}
+    state_dict = artifact.get("state_dict", artifact)
+    if isinstance(state_dict, dict) and state_dict and all(
+        isinstance(value, torch.Tensor) for value in state_dict.values()
+    ):
+        config = CrazeLMConfig()
+        model = CrazeLM(config).to(device)
+        try:
+            model.load_state_dict(state_dict, strict=True)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "The .pt file is a raw state_dict, but it does not match the "
+                "repository's default CrazeLMConfig (100k vocab, width 256, "
+                "5 layers, 8 heads, context 128). The archive must include "
+                "model_config.json or the exporter must be given its exact config. "
+                f"Original load error: {exc}"
+            ) from exc
+        model.eval()
+        return model, config, {}
+
+    raise TypeError(
+        "The .pt file loaded as a dict, but it is neither a CrazeLM checkpoint "
+        "with a 'model' state_dict nor a raw tensor state_dict. "
+        f"Top-level keys: {list(artifact)[:20]}"
+    )
 
 
 def export(checkpoint_path: Path, output_path: Path, opset: int = 18):
@@ -50,8 +122,6 @@ def export(checkpoint_path: Path, output_path: Path, opset: int = 18):
     model, config, checkpoint = load_model(checkpoint_path, device)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Use non-special token IDs and a short sequence for tracing. Both batch and
-    # sequence dimensions remain dynamic; the model still enforces max_seq_len.
     seq_len = min(8, config.max_seq_len)
     sample = torch.randint(
         low=0, high=config.vocab_size, size=(1, seq_len), dtype=torch.long
@@ -77,13 +147,14 @@ def export(checkpoint_path: Path, output_path: Path, opset: int = 18):
 
     exported = onnx.load(str(output_path))
     onnx.checker.check_model(exported)
+    params = sum(p.numel() for p in model.parameters())
     metadata = {
         "model_name": "CrazeLM-30M",
         "format": "ONNX",
         "task": "causal-language-model-next-token-logits",
         "vocab_size": str(config.vocab_size),
         "max_seq_len": str(config.max_seq_len),
-        "parameter_count": str(model.parameter_count()),
+        "parameter_count": str(params),
         "checkpoint_step": str(checkpoint.get("step", "unknown")),
         "checkpoint_val_loss": str(checkpoint.get("val_loss", "unknown")),
     }
@@ -95,10 +166,10 @@ def export(checkpoint_path: Path, output_path: Path, opset: int = 18):
     onnx.save(exported, str(output_path))
 
     print(f"Exported: {output_path}")
-    print(f"Parameters: {model.parameter_count():,}")
+    print(f"Parameters: {params:,}")
     print(f"Vocabulary: {config.vocab_size:,}")
     print(f"Maximum sequence length: {config.max_seq_len}")
-    print(f"Checkpoint step: {checkpoint.get('step', 'unknown')}")
+    print(f"Loaded artifact type: {type(model).__name__}")
 
 
 def main():
