@@ -2,6 +2,12 @@ name: Export CrazeLM ONNX
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "crazelm/**"
+      - "scripts/export_onnx.py"
+      - "tests/test_onnx_export.py"
+      - ".github/workflows/export-onnx.yml"
   push:
     branches: [main]
     paths:
