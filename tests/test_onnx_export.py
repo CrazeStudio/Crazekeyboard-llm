@@ -66,6 +66,6 @@ def test_onnx_has_expected_io(exported_model):
 
 def test_export_is_smaller_than_release_checkpoint(exported_model):
     _, _, _, onnx_path = exported_model
-    # The released model.pt is ~110 MB. FP16 conversion plus tied-weight
-    # deduplication should keep this export below 100 MiB.
+    # The released model.pt is ~110 MB. FP16 weights plus shared tied embeddings
+    # should keep the export comfortably below the original checkpoint size.
     assert onnx_path.stat().st_size < 100 * 1024 * 1024
