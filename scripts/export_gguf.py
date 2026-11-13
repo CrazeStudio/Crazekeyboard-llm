@@ -8,6 +8,7 @@ The tokenizer remains the original SentencePiece BPE vocabulary.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -23,26 +24,43 @@ import gguf
 from crazelm.model import CrazeLM, CrazeLMConfig
 
 
-def load_checkpoint(path: Path):
+def load_checkpoint(path: Path, config_path: Path):
     artifact = torch.load(path, map_location="cpu", weights_only=False)
-    if not isinstance(artifact, dict) or not isinstance(artifact.get("model"), dict):
-        raise TypeError("Expected a training checkpoint containing a 'model' state_dict.")
-    config_data = artifact.get("config")
+    if not isinstance(artifact, dict):
+        raise TypeError("Expected a checkpoint dictionary or raw state_dict.")
+
+    if isinstance(artifact.get("model"), dict):
+        state_dict = artifact["model"]
+        config_data = artifact.get("config")
+    else:
+        # The published v1.0 bundle stores model.pt as a raw state_dict and
+        # keeps the exact architecture in the sibling config.json.
+        state_dict = artifact.get("state_dict", artifact)
+        config_data = None
+
+    if not isinstance(state_dict, dict) or not state_dict or not all(
+        isinstance(value, torch.Tensor) for value in state_dict.values()
+    ):
+        raise TypeError("The .pt file does not contain a valid tensor state_dict.")
+
     if not isinstance(config_data, dict):
-        raise ValueError("Checkpoint is missing its exact 'config' metadata.")
-    cfg = CrazeLMConfig(**config_data)
+        if not config_path.is_file():
+            raise ValueError("Raw state_dict requires the release config.json.")
+        config_data = json.loads(config_path.read_text(encoding="utf-8"))
+
+    allowed = CrazeLMConfig.__dataclass_fields__
+    cfg = CrazeLMConfig(**{key: value for key, value in config_data.items() if key in allowed})
     model = CrazeLM(cfg)
-    model.load_state_dict(artifact["model"], strict=True)
+    model.load_state_dict(state_dict, strict=True)
     model.eval()
     return model, cfg, artifact
-
 
 def tensor_array(tensor: torch.Tensor) -> np.ndarray:
     return tensor.detach().cpu().contiguous().to(torch.float16).numpy()
 
 
-def export(checkpoint: Path, tokenizer_path: Path, output: Path):
-    model, cfg, artifact = load_checkpoint(checkpoint)
+def export(checkpoint: Path, tokenizer_path: Path, config_path: Path, output: Path):
+    model, cfg, artifact = load_checkpoint(checkpoint, config_path)
     tokenizer = spm.SentencePieceProcessor(model_file=str(tokenizer_path))
 
     if tokenizer.get_piece_size() != cfg.vocab_size:
@@ -159,12 +177,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument("--tokenizer", required=True, type=Path)
+    parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--output", default=Path("artifacts/CrazeLM-30M-F16.gguf"), type=Path)
     args = parser.parse_args()
-    for path in (args.checkpoint, args.tokenizer):
+    for path in (args.checkpoint, args.tokenizer, args.config):
         if not path.is_file():
             parser.error(f"Required file does not exist: {path}")
-    export(args.checkpoint, args.tokenizer, args.output)
+    export(args.checkpoint, args.tokenizer, args.config, args.output)
 
 
 if __name__ == "__main__":
