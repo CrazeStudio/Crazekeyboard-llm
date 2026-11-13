@@ -1,26 +1,29 @@
 #!/usr/bin/env python3
-"""Prepare an English-only WikiText-2 corpus for CrazeLM.
+"""Prepare English-only WikiText-2 data from Hugging Face-hosted Parquet files.
 
-Uses curl with redirect/retry support when available, then Python urllib as a
-fallback. Does not require Hugging Face datasets or pyarrow.
+This avoids the retired/redirecting S3 archive URL and does not import the
+Hugging Face datasets package. Kaggle's existing pandas + pyarrow can read the
+small Parquet split files.
 """
 import argparse
-import hashlib
 import json
 import re
 import shutil
 import subprocess
 import urllib.request
-import zipfile
 from pathlib import Path
 
-WIKITEXT_URL = "https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-2-raw-v1.zip"
-WIKITEXT_SHA256 = "ef7edb566e3e2b2d31b29c1fdb0c89a4cc683597484c3dc2517919c615435a11"
+DATASET_REPO = "EleutherAI/wikitext_document_level"
+BASE_URL = f"https://huggingface.co/datasets/{DATASET_REPO}/resolve/main/wikitext-2-raw-v1"
+SPLITS = {
+    "train": "wikitext-2-raw-v1-train.parquet",
+    "validation": "wikitext-2-raw-v1-validation.parquet",
+}
 
 
 def clean_line(value: str) -> str:
     value = value.replace("@-@", "-").replace("@,@", ",").replace("@.@", ".")
-    value = re.sub(r"\\s+", " ", value).strip()
+    value = re.sub(r"\s+", " ", value).strip()
     if not value or (value.startswith("=") and value.endswith("=")):
         return ""
     if not re.search(r"[A-Za-z]", value):
@@ -28,68 +31,72 @@ def clean_line(value: str) -> str:
     return value
 
 
-def download_archive(archive: Path):
-    archive.parent.mkdir(parents=True, exist_ok=True)
-    if archive.exists():
-        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-        if digest == WIKITEXT_SHA256:
-            print("Using verified cached WikiText-2 archive.")
-            return
-        print("Cached archive checksum mismatch; downloading a fresh copy.")
-        archive.unlink()
+def download_file(url: str, destination: Path):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() and destination.stat().st_size > 1024:
+        with destination.open("rb") as stream:
+            if stream.read(4) == b"PAR1":
+                print(f"Using cached {destination.name}")
+                return
+        destination.unlink()
 
     if shutil.which("curl"):
         command = [
             "curl", "--location", "--fail", "--show-error",
             "--retry", "5", "--retry-all-errors", "--retry-delay", "2",
             "--connect-timeout", "30", "--max-time", "300",
-            "--output", str(archive), WIKITEXT_URL,
+            "--output", str(destination), url,
         ]
-        print("Downloading WikiText-2 with curl (redirects and retries enabled)...")
+        print(f"Downloading {destination.name} from Hugging Face...")
         try:
             subprocess.run(command, check=True)
-        except (subprocess.CalledProcessError, OSError):
-            archive.unlink(missing_ok=True)
-            raise RuntimeError("curl could not download WikiText-2. Check Kaggle Internet access and retry.")
+        except (subprocess.CalledProcessError, OSError) as exc:
+            destination.unlink(missing_ok=True)
+            raise RuntimeError(f"Could not download {destination.name}. Check Kaggle Internet access.") from exc
     else:
-        print("Downloading WikiText-2 with Python urllib...")
-        request = urllib.request.Request(
-            WIKITEXT_URL,
-            headers={"User-Agent": "Mozilla/5.0 CrazeLM-dataset-preparer/1.0"},
-        )
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 CrazeLM/1.0"})
         try:
-            with urllib.request.urlopen(request, timeout=120) as response, archive.open("wb") as target:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    target.write(chunk)
+            with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as target:
+                shutil.copyfileobj(response, target)
         except Exception:
-            archive.unlink(missing_ok=True)
+            destination.unlink(missing_ok=True)
             raise
 
-    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    if digest != WIKITEXT_SHA256:
-        archive.unlink(missing_ok=True)
+    if not destination.exists() or destination.stat().st_size < 1024:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError(f"Download of {destination.name} was empty or too small.")
+    with destination.open("rb") as stream:
+        magic = stream.read(4)
+    if magic != b"PAR1":
+        preview = destination.read_bytes()[:200].decode("utf-8", errors="replace")
+        destination.unlink(missing_ok=True)
         raise RuntimeError(
-            "Downloaded WikiText-2 archive failed SHA-256 verification. "
-            f"Expected {WIKITEXT_SHA256}, got {digest}. The download may have been an HTML error page."
+            f"{destination.name} is not a Parquet file (HTTP proxy may have returned an error page). "
+            f"Response preview: {preview!r}"
         )
 
 
-def download_wikitext(cache_dir: Path):
-    archive = cache_dir / "wikitext-2-raw-v1.zip"
-    download_archive(archive)
-    with zipfile.ZipFile(archive) as zf:
-        members = {Path(name).name: name for name in zf.namelist() if name.endswith(".txt")}
-        required = {"wiki.train.raw", "wiki.valid.raw"}
-        if not required.issubset(members):
-            raise RuntimeError(f"Unexpected WikiText archive contents: {sorted(members)}")
-        result = {}
-        for split, filename in (("train", "wiki.train.raw"), ("validation", "wiki.valid.raw")):
-            with zf.open(members[filename]) as source:
-                lines = (line.decode("utf-8", errors="ignore") for line in source)
-                result[split] = list(filter(None, (clean_line(line) for line in lines)))
+def load_wikitext(cache_dir: Path):
+    try:
+        import pandas as pd
+    except ImportError as exc:
+        raise RuntimeError(
+            "pandas/pyarrow is required to read the small Parquet files. "
+            "Kaggle normally includes both; do not upgrade pyarrow blindly."
+        ) from exc
+
+    result = {}
+    for split, filename in SPLITS.items():
+        path = cache_dir / filename
+        download_file(f"{BASE_URL}/{filename}?download=true", path)
+        frame = pd.read_parquet(path, columns=["text"])
+        result[split] = [
+            cleaned for value in frame["text"].dropna().astype(str)
+            if (cleaned := clean_line(value))
+        ]
+        if not result[split]:
+            raise RuntimeError(f"No usable English text found in {split} split.")
+        print(f"{split}: {len(result[split]):,} cleaned lines")
     return result
 
 
@@ -131,11 +138,17 @@ def main():
         validation = [line for i, line in enumerate(rows) if i in validation_ids]
         source_name = f"local:{source.resolve()}"
         source_note = "User-supplied text. Verify rights and license before training or distributing a model."
+        license_name = "User supplied; not verified by this script"
     else:
-        splits = download_wikitext(output / "downloads")
+        splits = load_wikitext(output / "downloads")
         train, validation = splits["train"], splits["validation"]
-        source_name = "Salesforce/WikiText-2-raw-v1"
-        source_note = "WikiText-2 is a small Wikipedia-derived benchmark corpus. Dataset metadata lists CC BY-SA licensing; preserve attribution and review share-alike obligations before distributing a derived model."
+        source_name = DATASET_REPO
+        source_note = (
+            "WikiText-2 is a small Wikipedia-derived benchmark corpus, not a natural keyboard-typing corpus. "
+            "Dataset card identifies CC BY-SA 3.0; retain attribution and review share-alike obligations "
+            "before distributing a derived model."
+        )
+        license_name = "CC BY-SA 3.0 (verify current dataset card)"
 
     if args.max_train_lines:
         train = train[:args.max_train_lines]
@@ -146,15 +159,15 @@ def main():
 
     for folder, lines in ((train_dir, train), (val_dir, validation)):
         with (folder / "english.txt").open("w", encoding="utf-8") as target:
-            target.write("\\n".join(lines) + "\\n")
+            target.write("\n".join(lines) + "\n")
 
     manifest = {
         "dataset": source_name,
         "language": "English",
+        "license": license_name,
         "train_lines": len(train),
         "validation_lines": len(validation),
         "source_note": source_note,
-        "archive_sha256": WIKITEXT_SHA256 if not args.input_dir else None,
         "format": "UTF-8 plain text, one cleaned line per example",
     }
     (output / "DATASET_MANIFEST.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
