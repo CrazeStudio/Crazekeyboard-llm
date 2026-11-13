@@ -23,7 +23,7 @@ SPLITS = {
 
 def clean_line(value: str) -> str:
     value = value.replace("@-@", "-").replace("@,@", ",").replace("@.@", ".")
-    value = re.sub(r"\s+", " ", value).strip()
+    value = re.sub(r"\\s+", " ", value).strip()
     if not value or (value.startswith("=") and value.endswith("=")):
         return ""
     if not re.search(r"[A-Za-z]", value):
@@ -89,14 +89,27 @@ def load_wikitext(cache_dir: Path):
     for split, filename in SPLITS.items():
         path = cache_dir / filename
         download_file(f"{BASE_URL}/{filename}?download=true", path)
-        frame = pd.read_parquet(path, columns=["text"])
-        result[split] = [
-            cleaned for value in frame["text"].dropna().astype(str)
-            if (cleaned := clean_line(value))
-        ]
+        # The hosted document-level Parquet files use `page`, not `text`.
+        # Read the schema first so a future column-name change gives a useful error.
+        frame = pd.read_parquet(path)
+        column = "page" if "page" in frame.columns else "text" if "text" in frame.columns else None
+        if column is None:
+            raise RuntimeError(
+                f"Unexpected columns in {filename}: {list(frame.columns)}. "
+                "Expected a `page` or `text` column; the downloaded dataset schema may have changed."
+            )
+
+        cleaned_lines = []
+        for value in frame[column].dropna().astype(str):
+            # A document-level row may contain several original WikiText lines.
+            for line in value.splitlines():
+                cleaned = clean_line(line)
+                if cleaned:
+                    cleaned_lines.append(cleaned)
+        result[split] = cleaned_lines
         if not result[split]:
             raise RuntimeError(f"No usable English text found in {split} split.")
-        print(f"{split}: {len(result[split]):,} cleaned lines")
+        print(f"{split}: {len(result[split]):,} cleaned lines (column: {column})")
     return result
 
 
@@ -159,7 +172,7 @@ def main():
 
     for folder, lines in ((train_dir, train), (val_dir, validation)):
         with (folder / "english.txt").open("w", encoding="utf-8") as target:
-            target.write("\n".join(lines) + "\n")
+            target.write("\\n".join(lines) + "\\n")
 
     manifest = {
         "dataset": source_name,
