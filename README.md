@@ -28,7 +28,7 @@ Create a Kaggle notebook, enable a GPU, and run each cell in order. Internet mus
 !pip install -q -r requirements.txt
 ```
 
-The requirements deliberately do not install Hugging Face `datasets` or upgrade `pyarrow`/Pillow. Dataset preparation downloads the small WikiText-2 archive directly, avoiding the dependency conflicts previously seen in Kaggle. If you already cloned the repository in this session, use `%cd /kaggle/working/Crazekeyboard-llm` instead of cloning again.
+The requirements deliberately do not install Hugging Face `datasets` or upgrade `pyarrow`/Pillow. Dataset preparation reads the small Parquet split files with Kaggle's preinstalled pandas/pyarrow and does not use the retired S3 archive URL. If you already cloned the repository in this session, use `%cd /kaggle/working/Crazekeyboard-llm` instead of cloning again.
 
 ### 2. Check GPU and imports
 
@@ -48,7 +48,7 @@ print("CUDA available:", torch.cuda.is_available())
   --output_dir /kaggle/working/crazelm_data
 ```
 
-This downloads the official WikiText-2 raw archive and creates:
+This downloads the train and validation Parquet files from the Hugging Face-hosted WikiText-2 repository using redirect-aware downloads, validates their Parquet signatures, and creates:
 - `crazelm_data/train/english.txt`
 - `crazelm_data/validation/english.txt`
 - `crazelm_data/DATASET_MANIFEST.json`
