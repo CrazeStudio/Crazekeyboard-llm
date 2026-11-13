@@ -151,3 +151,26 @@ Still required before calling CrazeLM production-ready:
 - on-device latency, RAM, battery, and crash testing
 
 **This is the final architecture target, not a finished trained model.** The 100k tokenizer and trained weights must still be generated and evaluated in Kaggle. Do not describe it as production-ready until the remaining work passes testing.
+
+
+## 8. Export the v1.0 release to ONNX
+
+The repository includes a GitHub Actions workflow at `.github/workflows/export-onnx.yml`. Run it from **Actions → Export CrazeLM ONNX → Run workflow**. It downloads the pinned release archive:
+
+`https://github.com/CrazeStudio/Crazekeyboard-llm/releases/download/v1.0/CrazeLM-30M-v1.0.zip`
+
+The workflow extracts the archive, selects `best.pt` when present (otherwise the first `.pt` checkpoint), exports its checkpoint weights to `CrazeLM-30M-v1.0.onnx`, validates the ONNX graph, and runs numerical parity tests against PyTorch on several batch and sequence sizes. It uploads the ONNX file, original ZIP, and SHA-256 checksums as a workflow artifact.
+
+To export locally:
+
+```bash
+pip install -r requirements.txt
+pip install "onnx>=1.16" "onnxruntime>=1.18" "pytest>=8"
+unzip CrazeLM-30M-v1.0.zip -d release
+python scripts/export_onnx.py --checkpoint release/path/to/best.pt --output CrazeLM-30M-v1.0.onnx
+CRAZELM_CHECKPOINT=release/path/to/best.pt CRAZELM_ONNX=CrazeLM-30M-v1.0.onnx pytest -q tests/test_onnx_export.py
+```
+
+The ONNX graph accepts `input_ids` (int64 token IDs) and returns `logits` with shape `[batch, sequence, 100000]`. The sequence length may vary up to the checkpoint's configured maximum (128 for the current target). The SentencePiece tokenizer is still required by the Android app to turn text into token IDs and decode predicted token IDs.
+
+This workflow produces an ONNX model artifact; it does not yet integrate ONNX Runtime into the Android keyboard app or implement word-level suggestion ranking.
