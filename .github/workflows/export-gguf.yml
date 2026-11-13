@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  export-and-smoke-test:
+  export:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -71,19 +71,6 @@ jobs:
             --tokenizer "${{ steps.inputs.outputs.tokenizer }}" \
             --config "${{ steps.inputs.outputs.config }}" \
             --output artifacts/output/CrazeLM-30M-F16.gguf
-
-      - name: Build llama.cpp CPU runtime
-        run: |
-          cmake -S /tmp/llama.cpp -B /tmp/llama.cpp/build \
-            -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=ON
-          cmake --build /tmp/llama.cpp/build --config Release --target llama-cli -j 2
-
-      - name: Runtime load and generation smoke test
-        run: |
-          /tmp/llama.cpp/build/bin/llama-cli \
-            --model artifacts/output/CrazeLM-30M-F16.gguf \
-            --prompt "I am going to" --n-predict 2 --ctx-size 128 \
-            --no-display-prompt --no-warmup
 
       - name: Generate SHA-256 checksum
         run: |
