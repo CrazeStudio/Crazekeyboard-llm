@@ -72,7 +72,15 @@ def split_dialog(value):
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, list):
-            return [str(x) for x in parsed if isinstance(x, (str, int, float))]
+            items = []
+            for item in parsed:
+                if isinstance(item, (str, int, float)):
+                    items.append(str(item))
+                elif isinstance(item, dict):
+                    content = item.get("content") or item.get("text") or item.get("utterance") or item.get("message")
+                    if isinstance(content, str):
+                        items.append(content)
+            return items
         if isinstance(parsed, dict):
             for key in ("messages", "dialog", "conversation", "utterances", "text"):
                 if key in parsed:
