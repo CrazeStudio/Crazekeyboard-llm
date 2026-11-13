@@ -103,32 +103,64 @@ def load_model(checkpoint_path: Path, device: torch.device):
 
 
 def deduplicate_initializers(model: onnx.ModelProto) -> int:
-    """Remove byte-identical initializers (notably CrazeLM's tied embeddings)."""
-    seen: dict[tuple, str] = {}
+    """Share identical or transposed initializers, including tied embedding/head weights."""
+    seen_exact: dict[tuple, str] = {}
+    seen_transpose: dict[tuple, str] = {}
     replacements: dict[str, str] = {}
+    transpose_nodes = []
     kept = []
     removed = 0
+
     for tensor in model.graph.initializer:
-        raw = tensor.raw_data or numpy_helper.to_array(tensor).tobytes()
-        key = (tensor.data_type, tuple(tensor.dims), hashlib.sha256(raw).digest())
-        if key in seen:
-            replacements[tensor.name] = seen[key]
+        array = numpy_helper.to_array(tensor)
+        raw = tensor.raw_data or array.tobytes(order="C")
+        exact_key = (tensor.data_type, tuple(tensor.dims), hashlib.sha256(raw).digest())
+
+        if exact_key in seen_exact:
+            replacements[tensor.name] = seen_exact[exact_key]
             removed += 1
-        else:
-            seen[key] = tensor.name
-            kept.append(tensor)
+            continue
 
-    if not replacements:
-        return 0
+        transpose_key = None
+        if array.ndim == 2:
+            transpose_key = (
+                tensor.data_type,
+                tuple(reversed(tensor.dims)),
+                hashlib.sha256(array.T.tobytes(order="C")).digest(),
+            )
+            source_name = seen_transpose.get(
+                (tensor.data_type, tuple(tensor.dims), hashlib.sha256(raw).digest())
+            )
+            if source_name is not None:
+                alias = f"{tensor.name}__shared_transpose"
+                transpose_nodes.append(
+                    onnx.helper.make_node(
+                        "Transpose", [source_name], [alias], perm=[1, 0],
+                        name=f"share_tied_weight_{len(transpose_nodes)}",
+                    )
+                )
+                replacements[tensor.name] = alias
+                removed += 1
+                continue
 
-    for node in model.graph.node:
-        for index, name in enumerate(node.input):
-            if name in replacements:
-                node.input[index] = replacements[name]
-    del model.graph.initializer[:]
-    model.graph.initializer.extend(kept)
+        seen_exact[exact_key] = tensor.name
+        kept.append(tensor)
+        if transpose_key is not None:
+            seen_transpose[transpose_key] = tensor.name
+
+    if replacements:
+        for node in model.graph.node:
+            for index, name in enumerate(node.input):
+                if name in replacements:
+                    node.input[index] = replacements[name]
+        del model.graph.initializer[:]
+        model.graph.initializer.extend(kept)
+        # Place generated transpose nodes before their consumers to preserve topological order.
+        existing_nodes = list(model.graph.node)
+        del model.graph.node[:]
+        model.graph.node.extend(transpose_nodes)
+        model.graph.node.extend(existing_nodes)
     return removed
-
 
 def export(checkpoint_path: Path, output_path: Path, opset: int = 18):
     device = torch.device("cpu")
