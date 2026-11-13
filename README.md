@@ -15,7 +15,7 @@ CrazeLM is an English causal Transformer intended to provide next-word candidate
 | FFN width | 1,024 |
 | Context length | 128 tokens |
 | Embedding/output weights | Tied |
-| Expected parameters | 29,584,640 (about 29.6M) |
+| Expected parameters | 29,582,080 (about 29.6M) |
 | Language | English |
 
 The embedding table accounts for most parameters: 100,000 x 256 = 25.6M. The remaining parameters are in the five Transformer blocks, positional embeddings, and normalization layers. The model inspector and training script verify the parameter count. If you change the vocabulary size, the parameter count changes.
@@ -45,7 +45,7 @@ Inspect the architecture before training:
 
 Expected output is approximately:
 
-    Trainable parameters: 29,584,640
+    Trainable parameters: 29,582,080
     FP32 weights: 118.34 MB
     FP16 weights: 59.17 MB
     INT8 weights (ideal): 29.58 MB
