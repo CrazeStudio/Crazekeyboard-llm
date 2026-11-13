@@ -1,4 +1,4 @@
 torch>=2.2
 sentencepiece>=0.2.0
 tqdm>=4.66
-datasets>=2.19
+numpy>=1.26
