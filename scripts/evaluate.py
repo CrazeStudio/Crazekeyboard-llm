@@ -6,6 +6,13 @@ import numpy as np
 import sentencepiece as spm
 import torch
 from pathlib import Path
+import sys
+
+# Allow direct execution as `python scripts/evaluate.py` from any working directory.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from crazelm.model import CrazeLM, CrazeLMConfig
 
 
