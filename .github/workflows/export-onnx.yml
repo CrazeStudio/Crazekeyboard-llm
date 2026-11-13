@@ -1,0 +1,90 @@
+name: Export CrazeLM ONNX
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "crazelm/**"
+      - "scripts/export_onnx.py"
+      - "tests/test_onnx_export.py"
+      - ".github/workflows/export-onnx.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  export-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install export and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "onnx>=1.16" "onnxruntime>=1.18" "pytest>=8"
+
+      - name: Download CrazeLM v1.0 release archive
+        run: |
+          mkdir -p artifacts/source
+          curl --fail --location --retry 3 --retry-delay 2 \
+            "https://github.com/CrazeStudio/Crazekeyboard-llm/releases/download/v1.0/CrazeLM-30M-v1.0.zip" \
+            --output artifacts/CrazeLM-30M-v1.0.zip
+          unzip -q artifacts/CrazeLM-30M-v1.0.zip -d artifacts/source
+          echo "Archive contents:"
+          find artifacts/source -maxdepth 5 -type f -printf '%p (%s bytes)\\n'
+
+      - name: Locate PyTorch checkpoint
+        id: checkpoint
+        shell: bash
+        run: |
+          CHECKPOINT="$(find artifacts/source -type f -name '*.pt' | sort | grep -E '/best\\.pt$' | head -n 1 || true)"
+          if [ -z "$CHECKPOINT" ]; then
+            CHECKPOINT="$(find artifacts/source -type f -name '*.pt' | sort | head -n 1)"
+          fi
+          if [ -z "$CHECKPOINT" ]; then
+            echo "::error::No .pt checkpoint was found in the release ZIP."
+            exit 1
+          fi
+          echo "Found checkpoint: $CHECKPOINT"
+          echo "path=$CHECKPOINT" >> "$GITHUB_OUTPUT"
+
+      - name: Export ONNX
+        run: |
+          python scripts/export_onnx.py \
+            --checkpoint "${{ steps.checkpoint.outputs.path }}" \
+            --output artifacts/CrazeLM-30M-v1.0.onnx \
+            --opset 18
+
+      - name: Test ONNX graph against PyTorch
+        env:
+          CRAZELM_CHECKPOINT: ${{ steps.checkpoint.outputs.path }}
+          CRAZELM_ONNX: artifacts/CrazeLM-30M-v1.0.onnx
+        run: pytest -q tests/test_onnx_export.py
+
+      - name: Write checksums
+        run: |
+          cd artifacts
+          sha256sum CrazeLM-30M-v1.0.zip CrazeLM-30M-v1.0.onnx > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload ONNX export and source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrazeLM-30M-ONNX-v1.0
+          path: |
+            artifacts/CrazeLM-30M-v1.0.onnx
+            artifacts/CrazeLM-30M-v1.0.zip
+            artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
