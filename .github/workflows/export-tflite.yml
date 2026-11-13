@@ -1,0 +1,69 @@
+name: Export CrazeLM TFLite
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/export_tflite.py"
+      - ".github/workflows/export-tflite.yml"
+      - "crazelm/model.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: crazelm-tflite-export
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out model source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install conversion dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch sentencepiece litert-torch ai-edge-litert numpy
+
+      - name: Download and verify original checkpoint archive
+        run: |
+          curl --fail --location --retry 3 \
+            "https://github.com/CrazeStudio/Crazekeyboard-llm/releases/download/v1.0/CrazeLM-30M-v1.0.zip" \
+            --output CrazeLM-30M-v1.0.zip
+          echo "3805a75f77e84d263b8565c6537cec25ae8a6a01a21e17cfdda9638b8745bca8  CrazeLM-30M-v1.0.zip" | sha256sum --check
+
+      - name: Convert PyTorch checkpoint to TFLite and verify parity
+        run: |
+          python scripts/export_tflite.py \
+            --archive CrazeLM-30M-v1.0.zip \
+            --output CrazeLM-30M-v1.0.tflite \
+            --sequence-length 48
+
+      - name: Upload model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrazeLM-30M-v1.0-tflite
+          path: |
+            CrazeLM-30M-v1.0.tflite
+            CrazeLM-30M-v1.0.tflite.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish TFLite assets to v1.0 release
+        env:
+          GH_TOKEN: \${{ github.token }}
+        run: |
+          gh release upload v1.0 \
+            CrazeLM-30M-v1.0.tflite \
+            CrazeLM-30M-v1.0.tflite.json \
+            --clobber
