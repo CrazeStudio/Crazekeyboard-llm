@@ -28,8 +28,9 @@ def encode_dir(folder, tokenizer, output):
                         continue
                     ids = tokenizer.encode(text, out_type=int)
                     if ids:
-                        ids.append(eos_id)  # prevent examples from running together
-                        np.asarray(ids, dtype=np.uint16).tofile(dst)
+                        ids.append(eos_id)
+                        # 100,000 token IDs require uint32; uint16 silently overflows.
+                        np.asarray(ids, dtype=np.uint32).tofile(dst)
                         total += len(ids)
     if total < 1000:
         raise RuntimeError(f"Only {total} tokens found in {folder}; provide a larger corpus.")
@@ -39,7 +40,9 @@ def encode_dir(folder, tokenizer, output):
 def sample_batch(data, batch_size, seq_len, device):
     max_start = len(data) - seq_len - 1
     if max_start < 0:
-        raise RuntimeError(f"Token stream ({len(data)}) is shorter than seq_len+1 ({seq_len + 1}).")
+        raise RuntimeError(
+            f"Token stream ({len(data)}) is shorter than seq_len+1 ({seq_len + 1})."
+        )
     starts = torch.randint(0, max_start + 1, (batch_size,)).tolist()
     x_np = np.stack([np.asarray(data[i:i + seq_len], dtype=np.int64) for i in starts])
     y_np = np.stack([np.asarray(data[i + 1:i + seq_len + 1], dtype=np.int64) for i in starts])
@@ -48,8 +51,6 @@ def sample_batch(data, batch_size, seq_len, device):
 
 @torch.no_grad()
 def evaluate(model, data, batch_size, seq_len, steps, device):
-    if data is None:
-        return None
     model.eval()
     losses = []
     for _ in range(steps):
@@ -73,25 +74,28 @@ def save_checkpoint(path, model, optimizer, scaler, step, epoch, val_loss):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train the English-only CrazeLM next-token model.")
+    parser = argparse.ArgumentParser(
+        description="Train the final 30M-parameter English CrazeLM model."
+    )
     parser.add_argument("--train_dir", required=True)
     parser.add_argument("--val_dir", required=True)
     parser.add_argument("--tokenizer", required=True)
-    parser.add_argument("--output_dir", default="artifacts/crazelm")
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--seq_len", type=int, default=64)
-    parser.add_argument("--steps_per_epoch", type=int, default=1000)
+    parser.add_argument("--output_dir", default="artifacts/crazelm_30m")
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--seq_len", type=int, default=128)
+    parser.add_argument("--steps_per_epoch", type=int, default=2000)
     parser.add_argument("--eval_steps", type=int, default=50)
     parser.add_argument("--save_every", type=int, default=250)
-    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    if min(args.epochs, args.batch_size, args.seq_len, args.steps_per_epoch, args.eval_steps, args.save_every) <= 0:
+    if min(args.epochs, args.batch_size, args.seq_len, args.steps_per_epoch,
+           args.eval_steps, args.save_every) <= 0:
         parser.error("epochs, batch_size, seq_len, steps_per_epoch, eval_steps and save_every must be positive")
-    if args.seq_len > 64:
-        parser.error("This model configuration supports a maximum seq_len of 64 unless model config is changed.")
+    if args.seq_len > 128:
+        parser.error("The final CrazeLM configuration supports max_seq_len=128.")
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -108,23 +112,48 @@ def main():
         raise SystemExit(f"Tokenizer model not found: {tokenizer_path}")
     tokenizer = spm.SentencePieceProcessor(model_file=str(tokenizer_path))
     vocab_size = tokenizer.get_piece_size()
-    if vocab_size > 65535:
-        raise SystemExit("Tokenizer vocabulary exceeds uint16 token storage capacity.")
+    if vocab_size != 100_000:
+        raise SystemExit(
+            f"Expected the final 100,000-piece tokenizer, found {vocab_size:,}. "
+            "Train the final tokenizer before training this model."
+        )
 
     train_bin = out / "train_tokens.bin"
     train_count = encode_dir(args.train_dir, tokenizer, train_bin)
-    train_data = np.memmap(train_bin, dtype=np.uint16, mode="r")
+    train_data = np.memmap(train_bin, dtype=np.uint32, mode="r")
     val_bin = out / "val_tokens.bin"
     val_count = encode_dir(args.val_dir, tokenizer, val_bin)
-    val_data = np.memmap(val_bin, dtype=np.uint16, mode="r")
+    val_data = np.memmap(val_bin, dtype=np.uint32, mode="r")
 
-    cfg = CrazeLMConfig(vocab_size=vocab_size, max_seq_len=args.seq_len)
+    cfg = CrazeLMConfig(
+        vocab_size=vocab_size,
+        max_seq_len=args.seq_len,
+        d_model=256,
+        n_layers=5,
+        n_heads=8,
+        d_ff=1024,
+    )
     model = CrazeLM(cfg).to(device)
     count = model.parameter_count()
-    print(f"Device: {device}; parameters: {count:,}; train tokens: {train_count:,}; validation tokens: {val_count:,}")
+    print(
+        f"Device: {device}; parameters: {count:,}; "
+        f"train tokens: {train_count:,}; validation tokens: {val_count:,}"
+    )
     print(f"FP32 weights: {count * 4 / 1e6:.2f} MB")
+    print(f"FP16 weights: {count * 2 / 1e6:.2f} MB")
+    if not 29_000_000 <= count <= 31_000_000:
+        raise RuntimeError(
+            f"Expected approximately 30M parameters, but model has {count:,}. "
+            "Check the tokenizer vocabulary and model configuration."
+        )
     with (out / "model_config.json").open("w", encoding="utf-8") as stream:
-        json.dump({**model.config_dict(), "parameter_count": count, "language": "English"}, stream, indent=2)
+        json.dump({
+            **model.config_dict(),
+            "parameter_count": count,
+            "language": "English",
+            "tokenizer_vocab_size": vocab_size,
+            "token_storage_dtype": "uint32",
+        }, stream, indent=2)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.1)
     scaler = torch.cuda.amp.GradScaler(enabled=device == "cuda")
@@ -156,14 +185,23 @@ def main():
                 running_count = 0
 
             if global_step % args.save_every == 0 or global_step == args.epochs * args.steps_per_epoch:
-                val_loss = evaluate(model, val_data, args.batch_size, args.seq_len, args.eval_steps, device)
-                record = {"step": global_step, "epoch": epoch + 1, "train_loss_window": running_loss / running_count if running_count else None, "val_loss": val_loss}
+                val_loss = evaluate(
+                    model, val_data, args.batch_size, args.seq_len, args.eval_steps, device
+                )
+                record = {
+                    "step": global_step,
+                    "epoch": epoch + 1,
+                    "train_loss_window": running_loss / running_count if running_count else None,
+                    "val_loss": val_loss,
+                }
                 with metrics.open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps(record) + "\n")
-                save_checkpoint(out / "last.pt", model, optimizer, scaler, global_step, epoch + 1, val_loss)
+                save_checkpoint(out / "last.pt", model, optimizer, scaler,
+                                global_step, epoch + 1, val_loss)
                 if val_loss < best:
                     best = val_loss
-                    save_checkpoint(out / "best.pt", model, optimizer, scaler, global_step, epoch + 1, val_loss)
+                    save_checkpoint(out / "best.pt", model, optimizer, scaler,
+                                    global_step, epoch + 1, val_loss)
                 print(f"step={global_step} validation_loss={val_loss:.4f} best={best:.4f}")
 
         print(f"Epoch elapsed: {(time.time() - started) / 60:.1f} min")
