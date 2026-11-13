@@ -147,10 +147,10 @@ Still required before calling CrazeLM production-ready:
 - real typing benchmark for top-1/top-3/top-5 suggestion accuracy
 - autocorrect and typo correction
 - privacy-preserving on-device personalization
-- quantization/export and Android inference integration
-- on-device latency, RAM, battery, and crash testing
+- representative keyboard-accuracy evaluation (top-1/top-3/top-5)
+- on-device latency, RAM, battery, thermal, and crash testing
 
-**This is the final architecture target, not a finished trained model.** The 100k tokenizer and trained weights must still be generated and evaluated in Kaggle. Do not describe it as production-ready until the remaining work passes testing.
+**The v1.0 release contains a trained checkpoint and a TFLite export, but this is not yet a production-validated keyboard model.** The exported checkpoint reports step 20,000 and validation loss 4.6109; those figures alone do not prove broad English coverage or accurate word suggestions. Do not describe it as production-ready until held-out keyboard accuracy and physical-device performance tests pass.
 
 
 ## 8. Export the v1.0 release to ONNX
@@ -185,3 +185,18 @@ The exporter does not assume that a `.pt` file is a training-checkpoint dictiona
 4. Raw tensor `state_dict` matching the repository's default CrazeLM architecture
 
 A bare state dict has no architecture metadata, so the default 30M configuration is used and strict weight loading must match exactly. If the `.pt` contains a complete module, its forward output is normalized to logits. Unsupported payload types and incompatible weights fail with a diagnostic rather than silently exporting random weights.
+
+## 9. Export the v1.0 release to LiteRT / TensorFlow Lite
+
+The keyboard app uses the .tflite model, not ONNX Runtime. The workflow .github/workflows/export-tflite.yml downloads the pinned v1.0 release archive, loads its FP16 PyTorch model.pt state dictionary and matching 100k SentencePiece tokenizer, then converts the model directly with litert-torch. It does not pass through ONNX.
+
+The Android graph uses a fixed 48-token context and returns only the final next-token logits ([1, 100000]), rather than producing logits for every position. The export job checks numerical parity with the source PyTorch model on four representative prompts before uploading the TFLite artifact and publishing it with a SHA-256 manifest.
+
+Published assets:
+- CrazeLM-30M-v1.0.tflite
+- CrazeLM-30M-v1.0.tflite.json
+- tokenizer.model
+
+The TFLite file is currently about 118.3 MB. The keyboard downloads it on first use, verifies its size and SHA-256 against the manifest, and runs it locally through the TensorFlow Lite Interpreter API. The tokenizer is verified separately.
+
+To run the conversion workflow manually, open Actions > Export CrazeLM TFLite > Run workflow. The workflow uses the pinned release archive and publishes the artifacts to the v1.0 release after parity checks pass.
