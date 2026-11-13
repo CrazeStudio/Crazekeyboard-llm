@@ -75,13 +75,13 @@ jobs:
       - name: Test ONNX graph against PyTorch
         env:
           CRAZELM_CHECKPOINT: ${{ steps.checkpoint.outputs.path }}
-          CRAZELM_ONNX: artifacts/CrazeLM-30M-v1.0.onnx
+          CRAZELM_ONNX: artifacts/CrazeLM-30M-v1.0-fp16.onnx
         run: pytest -q tests/test_onnx_export.py
 
       - name: Write checksums
         run: |
           cd artifacts
-          sha256sum CrazeLM-30M-v1.0.zip CrazeLM-30M-v1.0.onnx > SHA256SUMS.txt
+          sha256sum CrazeLM-30M-v1.0.zip CrazeLM-30M-v1.0-fp16.onnx > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Upload ONNX export and source archive
@@ -89,7 +89,7 @@ jobs:
         with:
           name: CrazeLM-30M-ONNX-v1.0
           path: |
-            artifacts/CrazeLM-30M-v1.0.onnx
+            artifacts/CrazeLM-30M-v1.0-fp16.onnx
             artifacts/CrazeLM-30M-v1.0.zip
             artifacts/SHA256SUMS.txt
           if-no-files-found: error
