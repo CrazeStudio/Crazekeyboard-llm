@@ -55,18 +55,21 @@ jobs:
             CHECKPOINT="$(find artifacts/source -type f -name '*.pt' | head -n 1)"
           fi
           TOKENIZER="$(find artifacts/source -type f -name 'tokenizer.model' | head -n 1)"
-          if [ -z "$CHECKPOINT" ] || [ -z "$TOKENIZER" ]; then
+          CONFIG="$(find artifacts/source -type f -name 'config.json' | head -n 1)"
+          if [ -z "$CHECKPOINT" ] || [ -z "$TOKENIZER" ] || [ -z "$CONFIG" ]; then
             echo "::error::Release ZIP must contain a .pt checkpoint and tokenizer.model."
             exit 1
           fi
           echo "checkpoint=$CHECKPOINT" >> "$GITHUB_OUTPUT"
           echo "tokenizer=$TOKENIZER" >> "$GITHUB_OUTPUT"
+          echo "config=$CONFIG" >> "$GITHUB_OUTPUT"
 
       - name: Convert PyTorch checkpoint to GGUF
         run: |
           python scripts/export_gguf.py \
             --checkpoint "${{ steps.inputs.outputs.checkpoint }}" \
             --tokenizer "${{ steps.inputs.outputs.tokenizer }}" \
+            --config "${{ steps.inputs.outputs.config }}" \
             --output artifacts/output/CrazeLM-30M-F16.gguf
 
       - name: Build llama.cpp CPU runtime
